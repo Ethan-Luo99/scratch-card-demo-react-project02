@@ -1,0 +1,135 @@
+:root {
+  --scratch-coating: #c9c4d4;
+  --scratch-coating-text: #5a5466;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --scratch-coating: #3c3f4d;
+    --scratch-coating-text: #c8cbd6;
+  }
+}
+
+.scratch-grid-wrap {
+  padding-bottom: 32px;
+}
+
+.scratch-grid__status {
+  margin: 0;
+  padding: 0 20px 8px;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.scratch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+  padding: 24px 20px;
+}
+
+.scratch-card {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.scratch-card__prize {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 12px;
+  box-sizing: border-box;
+  text-align: center;
+}
+
+.scratch-card__prize-title {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.scratch-card__prize-subtitle {
+  font-size: 14px;
+  color: var(--text);
+}
+
+.scratch-card__coating {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+  cursor: grab;
+}
+
+.scratch-card[data-state='revealed'] .scratch-card__coating {
+  pointer-events: none;
+  opacity: 1;
+  cursor: default;
+}
+
+.scratch-card[data-state='revealing'] .scratch-card__coating {
+  opacity: 0;
+  transition: opacity 320ms ease-out;
+}
+
+.scratch-card__reveal-btn {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 2;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+
+  &:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+}
+
+.scratch-card[data-state='revealing'] .scratch-card__reveal-btn,
+.scratch-card[data-state='revealed'] .scratch-card__reveal-btn {
+  display: none;
+}
+
+.scratch-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 32px;
+  transform: translateX(-50%);
+  z-index: 10;
+  padding: 10px 20px;
+  border-radius: 8px;
+  background: var(--text-h);
+  color: var(--bg);
+  font-size: 15px;
+  box-shadow: var(--shadow);
+  pointer-events: none;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
