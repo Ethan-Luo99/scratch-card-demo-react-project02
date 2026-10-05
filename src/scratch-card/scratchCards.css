@@ -1,0 +1,147 @@
+/* 刮刮卡演示样式（方案 3.7）：布局、卡片、涂层、toast。
+   涂层底色/文字色走 CSS 变量并在暗色媒体查询覆盖（证据 7 / R12）。 */
+
+:root {
+  --scratch-coating: #c9c4d4;
+  --scratch-coating-text: #5a5466;
+  --scratch-toast-bg: #242031;
+  --scratch-toast-text: #f5f3fa;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --scratch-coating: #3c3f4d;
+    --scratch-coating-text: #b9bdd0;
+    --scratch-toast-bg: #e8e6f0;
+    --scratch-toast-text: #242031;
+  }
+}
+
+.scratch-section {
+  padding-bottom: 32px;
+}
+
+.scratch-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 20px;
+}
+
+.scratch-reset {
+  font: inherit;
+  font-size: 14px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+
+  &:hover {
+    border-color: var(--accent-border);
+    color: var(--text-h);
+  }
+}
+
+.scratch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+  padding: 24px 20px;
+}
+
+.scratch-card {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  box-shadow: var(--shadow);
+}
+
+.scratch-card__prize {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 12px;
+  box-sizing: border-box;
+  text-align: center;
+}
+
+.scratch-card__prize-title {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.scratch-card__prize-subtitle {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.scratch-card__coating {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none; /* R8：吃掉滚动手势，不阻断页面其余区域 */
+  cursor: grab;
+}
+
+.scratch-card[data-state='revealing'] .scratch-card__coating {
+  opacity: 0;
+  transition: opacity 320ms ease-out;
+}
+
+.scratch-card[data-state='revealed'] .scratch-card__coating {
+  pointer-events: none;
+  opacity: 1; /* 内容已 clearRect，保留元素仅为 a11y 状态稳定 */
+  cursor: default;
+}
+
+.scratch-card__reveal-btn {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 2;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  opacity: 0.85;
+
+  &:hover,
+  &:focus-visible {
+    opacity: 1;
+    border-color: var(--accent-border);
+  }
+}
+
+.scratch-card[data-state='revealing'] .scratch-card__reveal-btn,
+.scratch-card[data-state='revealed'] .scratch-card__reveal-btn {
+  display: none;
+}
+
+.scratch-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 40px;
+  transform: translateX(-50%);
+  z-index: 10;
+  padding: 10px 22px;
+  border-radius: 999px;
+  background: var(--scratch-toast-bg);
+  color: var(--scratch-toast-text);
+  font-size: 15px;
+  box-shadow: var(--shadow);
+  pointer-events: none;
+}
