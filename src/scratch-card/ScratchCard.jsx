@@ -13,6 +13,7 @@ import { useScratchCanvas } from './useScratchCanvas.js'
  * @property {string} cardId 同 useScratchCanvas.cardId，同一张卡全局唯一
  * @property {Prize} prize
  * @property {boolean} initiallyRevealed 由 Grid 持久化层读入的初始状态
+ * @property {import('./scratchStorage.js').ScratchStorage} storage Grid 注入、多卡共享的同一存储实例
  * @property {(cardId: string, prize: Prize) => void} onReveal 自动全开时回调给 Grid
  */
 
@@ -23,7 +24,7 @@ const COATING_TEXT = '刮开查看奖品'
  * 状态文案），ref 与句柄全部交给 useScratchCanvas，不写绘制与统计逻辑。
  * @param {ScratchCardProps} props
  */
-export default function ScratchCard({ cardId, prize, initiallyRevealed, onReveal }) {
+export default function ScratchCard({ cardId, prize, initiallyRevealed, storage, onReveal }) {
   // initiallyRevealed 是"初始"水合输入（R11）：挂载后卡片自管状态，
   // 冻结首值避免揭示后 Grid 重渲染把 prop 翻成 true 触发 effect 重建、打断淡出动画
   const [hydratedRevealed] = useState(() => initiallyRevealed)
@@ -40,6 +41,7 @@ export default function ScratchCard({ cardId, prize, initiallyRevealed, onReveal
   const { canvasRef, containerRef, reveal } = useScratchCanvas({
     cardId,
     initiallyRevealed: hydratedRevealed,
+    storage,
     coatingColor,
     coatingText: COATING_TEXT,
     onReveal: () => onReveal(cardId, prize),

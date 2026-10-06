@@ -21,12 +21,13 @@ import {
   rescaleMask,
   sampleClearedRatio,
 } from './scratchCanvasEngine.js'
-import { createScratchStorage } from './scratchStorage.js'
 
 /**
  * @typedef {object} UseScratchCanvasOptions
  * @property {string} cardId 卡片稳定唯一 id，用于持久化 key；仅允许 [a-zA-Z0-9_-]，长度 1~40
  * @property {boolean} initiallyRevealed 初始是否已揭示；为 true 时首帧即渲染全透涂层（用于刷新后水合）
+ * @property {import('./scratchStorage.js').ScratchStorage} storage 由调用方注入并在多卡间共享的同一存储实例；
+ *   reset 必须清除该实例（含调用方自定义 namespace）中的本卡记录，hook 内部不再自建存储
  * @property {string} coatingColor 涂层底色；必须由组件从 CSS 变量读取后以字符串传入，引擎不读样式表
  * @property {string} coatingText 涂层上的引导文案，例如"刮开查看奖品"；空串表示不绘制文字
  * @property {(ratio: number) => void} [onProgress] 刮开比例每发生整数百分点变化时触发（节流后，≤100 次/张生命周期）
@@ -197,10 +198,19 @@ export function useScratchCanvas(options) {
         container.dataset.state = 'revealed'
       }
 
-      container.dataset.state = 'revealing' // CSS：opacity 320ms 淡出（方案 3.7）
-      fadeFinish = finish
-      canvas.addEventListener('transitionend', finish)
-      fadeTimer = window.setTimeout(finish, REVEAL_FADE_MS)
+      // prefers-reduced-motion: reduce：不做 320ms 淡出，一次性直接进入 revealed，
+      // 不挂 transition/定时器，clearRect 后无闪烁、无残留半透明；其余环境行为不变
+      const prefersReducedMotion =
+        typeof window.matchMedia === 'function' &&
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      if (prefersReducedMotion) {
+        finish()
+      } else {
+        container.dataset.state = 'revealing' // CSS：opacity 320ms 淡出（方案 3.7）
+        fadeFinish = finish
+        canvas.addEventListener('transitionend', finish)
+        fadeTimer = window.setTimeout(finish, REVEAL_FADE_MS)
+      }
       // onReveal 只调用一次；Grid 在其中同步完成 storage 写入与 setState（R9）
       optionsRef.current.onReveal?.()
     }
@@ -389,7 +399,9 @@ export function useScratchCanvas(options) {
       isPointerDown = false
       activePointerId = null
       lastInsidePoint = null
-      createScratchStorage().removeCard(cardId)
+      // 清除调用方注入的同一存储实例中的本卡记录（含自定义 namespace），
+      // 不得自建默认实例（否则 Grid 使用自定义 namespace 时会清错 key）
+      optionsRef.current.storage.removeCard(cardId)
       maskCanvas = null
       setupBuffers(false)
       attachPointerListeners()

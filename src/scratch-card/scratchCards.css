@@ -24,6 +24,7 @@
 .scratch-toolbar {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
   padding: 0 20px;
 }
 
@@ -40,6 +41,16 @@
   &:hover {
     border-color: var(--accent-border);
     color: var(--text-h);
+  }
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: default;
+
+    &:hover {
+      border-color: var(--border);
+      color: var(--text);
+    }
   }
 }
 
