@@ -21,7 +21,10 @@ import {
   rescaleMask,
   sampleClearedRatio,
 } from './scratchCanvasEngine.js'
-import { createScratchStorage } from './scratchStorage.js'
+
+/**
+ * @typedef {import('./scratchStorage.js').ScratchStorage} ScratchStorage
+ */
 
 /**
  * @typedef {object} UseScratchCanvasOptions
@@ -29,6 +32,8 @@ import { createScratchStorage } from './scratchStorage.js'
  * @property {boolean} initiallyRevealed 初始是否已揭示；为 true 时首帧即渲染全透涂层（用于刷新后水合）
  * @property {string} coatingColor 涂层底色；必须由组件从 CSS 变量读取后以字符串传入，引擎不读样式表
  * @property {string} coatingText 涂层上的引导文案，例如"刮开查看奖品"；空串表示不绘制文字
+ * @property {ScratchStorage} storage 由调用方注入并共享的存储实例；
+ *   hook 不再自建，保证 reset()/撤销清除的 key 与 Grid 水合读取的 key 一致
  * @property {(ratio: number) => void} [onProgress] 刮开比例每发生整数百分点变化时触发（节流后，≤100 次/张生命周期）
  * @property {() => void} [onReveal] 比例首次达到 REVEAL_THRESHOLD 时触发一次（latch，只触发一次）
  * @property {() => void} [onScratchStart] 指针首次按下时触发一次（卡片内），用于埋点/触感，不驱动渲染
@@ -197,10 +202,16 @@ export function useScratchCanvas(options) {
         container.dataset.state = 'revealed'
       }
 
-      container.dataset.state = 'revealing' // CSS：opacity 320ms 淡出（方案 3.7）
-      fadeFinish = finish
-      canvas.addEventListener('transitionend', finish)
-      fadeTimer = window.setTimeout(finish, REVEAL_FADE_MS)
+      // prefers-reduced-motion: reduce 时跳过 320ms 淡出，一次性进入 revealed，
+      // 无闪烁、无残留半透明；其余环境维持 CSS opacity 淡出（方案 3.7 / 第 7 节取舍 7）
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        finish()
+      } else {
+        container.dataset.state = 'revealing' // CSS：opacity 320ms 淡出（方案 3.7）
+        fadeFinish = finish
+        canvas.addEventListener('transitionend', finish)
+        fadeTimer = window.setTimeout(finish, REVEAL_FADE_MS)
+      }
       // onReveal 只调用一次；Grid 在其中同步完成 storage 写入与 setState（R9）
       optionsRef.current.onReveal?.()
     }
@@ -389,7 +400,9 @@ export function useScratchCanvas(options) {
       isPointerDown = false
       activePointerId = null
       lastInsidePoint = null
-      createScratchStorage().removeCard(cardId)
+      // 存储实例由调用方注入共享（见 options.storage），reset 清除的 key
+      // 与 Grid 水合读取的 key 必然一致；撤销路径复用本方法，单次调用单次写入
+      optionsRef.current.storage.removeCard(cardId)
       maskCanvas = null
       setupBuffers(false)
       attachPointerListeners()

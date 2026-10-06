@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useImperativeHandle, useState } from 'react'
 import { useScratchCanvas } from './useScratchCanvas.js'
 
 /**
@@ -9,11 +9,18 @@ import { useScratchCanvas } from './useScratchCanvas.js'
  */
 
 /**
+ * @typedef {object} ScratchCardApi 经 ref 暴露给 Grid 的命令式句柄（撤销用）
+ * @property {() => void} reset 重置为全新未刮状态并同步清除持久化记录；幂等
+ */
+
+/**
  * @typedef {object} ScratchCardProps
  * @property {string} cardId 同 useScratchCanvas.cardId，同一张卡全局唯一
  * @property {Prize} prize
  * @property {boolean} initiallyRevealed 由 Grid 持久化层读入的初始状态
  * @property {(cardId: string, prize: Prize) => void} onReveal 自动全开时回调给 Grid
+ * @property {import('./scratchStorage.js').ScratchStorage} storage Grid 注入的共享存储实例
+ * @property {import('react').Ref<ScratchCardApi>} ref React 19 ref prop，暴露 ScratchCardApi
  */
 
 const COATING_TEXT = '刮开查看奖品'
@@ -23,7 +30,7 @@ const COATING_TEXT = '刮开查看奖品'
  * 状态文案），ref 与句柄全部交给 useScratchCanvas，不写绘制与统计逻辑。
  * @param {ScratchCardProps} props
  */
-export default function ScratchCard({ cardId, prize, initiallyRevealed, onReveal }) {
+export default function ScratchCard({ cardId, prize, initiallyRevealed, onReveal, storage, ref }) {
   // initiallyRevealed 是"初始"水合输入（R11）：挂载后卡片自管状态，
   // 冻结首值避免揭示后 Grid 重渲染把 prop 翻成 true 触发 effect 重建、打断淡出动画
   const [hydratedRevealed] = useState(() => initiallyRevealed)
@@ -37,17 +44,22 @@ export default function ScratchCard({ cardId, prize, initiallyRevealed, onReveal
     return value || '#c9c4d4'
   })
 
-  const { canvasRef, containerRef, reveal } = useScratchCanvas({
+  const { canvasRef, containerRef, reveal, reset } = useScratchCanvas({
     cardId,
     initiallyRevealed: hydratedRevealed,
     coatingColor,
     coatingText: COATING_TEXT,
+    storage,
     onReveal: () => onReveal(cardId, prize),
     onScratchStart: () => {
       // 触感反馈，不驱动渲染
       if (typeof navigator.vibrate === 'function') navigator.vibrate(10)
     },
   })
+
+  // 撤销入口：Grid 经 ref 拿到 reset；reset 为 useCallback 固定引用，
+  // 内部经 apiRef 派发到当前 effect 闭包，StrictMode 双挂载后始终指向存活实例
+  useImperativeHandle(ref, () => ({ reset }), [reset])
 
   return (
     <div

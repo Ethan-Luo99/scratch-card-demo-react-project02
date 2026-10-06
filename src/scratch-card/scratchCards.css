@@ -24,9 +24,11 @@
 .scratch-toolbar {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
   padding: 0 20px;
 }
 
+.scratch-undo,
 .scratch-reset {
   font: inherit;
   font-size: 14px;
@@ -41,6 +43,11 @@
     border-color: var(--accent-border);
     color: var(--text-h);
   }
+}
+
+.scratch-undo:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .scratch-grid {
@@ -96,6 +103,13 @@
 .scratch-card[data-state='revealing'] .scratch-card__coating {
   opacity: 0;
   transition: opacity 320ms ease-out;
+}
+
+/* prefers-reduced-motion: reduce 时禁用淡出过渡（JS 侧同点判定，双保险） */
+@media (prefers-reduced-motion: reduce) {
+  .scratch-card[data-state='revealing'] .scratch-card__coating {
+    transition: none;
+  }
 }
 
 .scratch-card[data-state='revealed'] .scratch-card__coating {
