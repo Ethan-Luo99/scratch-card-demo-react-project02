@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ScratchCard from './ScratchCard.jsx'
 import { createRevealHistory } from './scratchRevealHistory.js'
 import { createScratchStorage } from './scratchStorage.js'
@@ -26,26 +26,41 @@ const TOAST_DURATION_MS = 1800
  */
 export default function ScratchCardGrid({ cards = SCRATCH_CARDS, storageNamespace }) {
   const [storage] = useState(() => createScratchStorage(storageNamespace))
-  // 挂载时同步 readRevealed（localStorage 同步 API，首渲染前可得，R11 无闪烁水合）
-  const [initialRecords] = useState(() => storage.readRevealed())
+  // 挂载时同步 readRevealState（localStorage 同步 API，首渲染前可得，R11 无闪烁水合）：
+  // v1 裸记录在此被按 ts 升序迁移为 v2 并首次写回；正常 v2 幂等读取零写入
+  const [initialState] = useState(() => storage.readRevealState())
+  // 当前卡片数据的有效 id 集合：撤销/净化以此为准，已不存在的孤儿 id 跳过并清除
+  const cardIds = useMemo(() => new Set(cards.map((card) => card.cardId)), [cards])
   // 与当前卡片数据做交集，已不存在的孤儿 id 忽略不渲染（方案 5.4 第 6 步）
   const [revealedIds, setRevealedIds] = useState(
-    () => new Set(cards.filter((card) => initialRecords[card.cardId]).map((card) => card.cardId)),
+    () =>
+      new Set(
+        cards.filter((card) => initialState.records[card.cardId]).map((card) => card.cardId),
+      ),
   )
-  // 撤销顺序栈：水合初值按 ts 升序（最近揭示在栈顶）；与 revealedIds 由同一批
-  // 离散事件同步维护（揭示 push / 撤销 pop / 重置 clear），不引入高频 setState
+  // 撤销顺序栈：水合初值优先取 storage v2 持久化顺序（刷新后撤销立即可用）；
+  // 与 revealedIds、storage 由同一批离散事件同步维护（揭示 push / 撤销 pop /
+  // 重置 clear），不引入高频 setState
   const [history] = useState(() => {
     const validRecords = {}
     for (const card of cards) {
-      if (initialRecords[card.cardId]) validRecords[card.cardId] = initialRecords[card.cardId]
+      if (initialState.records[card.cardId]) {
+        validRecords[card.cardId] = initialState.records[card.cardId]
+      }
     }
-    return createRevealHistory(validRecords)
+    return createRevealHistory(validRecords, initialState.order)
   })
   const [toastQueue, setToastQueue] = useState(/** @type {{ id: number, text: string }[]} */ ([]))
   const [resetKey, setResetKey] = useState(0)
   const toastSeqRef = useRef(0)
   /** @type {import('react').MutableRefObject<Map<string, import('./ScratchCard.jsx').ScratchCardApi>>} */
   const cardApisRef = useRef(new Map())
+
+  // 水合净化：把持久化层中当前 cards 已不存在的孤儿记录/顺序项同步清掉（5.4 第 6 步）。
+  // 幂等 + 内容不变不写盘：StrictMode 双挂载第二次调用、刷新重复进入均零额外写入。
+  useEffect(() => {
+    storage.pruneReveal(cardIds)
+  }, [storage, cardIds])
 
   /** @type {(cardId: string, prize: Prize) => void} */
   const handleReveal = useCallback(
@@ -66,26 +81,43 @@ export default function ScratchCardGrid({ cards = SCRATCH_CARDS, storageNamespac
   )
 
   /**
-   * 撤销最近一次揭示（自动全开/按钮全开同一路径，水合记录按 ts 倒序）。
-   * 四个状态源严格一致回滚：revealedIds 在此删除；storage 记录、canvas 掩码与
-   * 涂层、指针监听与 revealed/ratio 内部状态由单卡 reset() 一次完成——
-   * reset 内部对共享 storage 恰好写入一次，Grid 不再重复写（不得双写）。
+   * 撤销最近一次揭示（自动全开/按钮全开同一路径，刷新后持久化顺序同样最近优先）。
+   * storage.popReveal 是唯一撤销写入口：自栈顶跳过并清除孤儿后弹出有效 id，
+   * 记录与持久化顺序在一次写回内同步回滚（恰好一次写入，无双写/串序窗口）。
+   * 随后内存 history 同步弹出（正常路径与持久化结果相同），再让单卡 reset()
+   * 复位涂层/掩码：该 reset 内部的 removeCard 删除的正是已不存在的记录，
+   * 内容不变 → storage 不产生第二次写盘（空转撤销零写入）。
    */
   const handleUndo = useCallback(() => {
-    const cardId = history.pop()
-    if (cardId === null) return // 撤销到空：no-op
+    const cardId = storage.popReveal(cardIds)
+    if (cardId === null) {
+      // 栈空（或尾部全为已被 popReveal 清掉的孤儿）：内存栈对齐持久化顺序，
+      // 揭示记录与持久化顺序同时为空，撤销按钮即置灰
+      const alive = storage.readRevealState().order.filter((id) => cardIds.has(id))
+      history.clear()
+      for (const id of alive) history.push(id)
+      setRevealedIds((prev) => {
+        const next = new Set(prev)
+        for (const id of next) {
+          if (!cardIds.has(id)) next.delete(id)
+        }
+        return next
+      })
+      return
+    }
+    history.pop()
     const api = cardApisRef.current.get(cardId)
     if (api) {
-      api.reset()
+      api.reset() // 复位 canvas 涂层/掩码/监听；内部 removeCard 为内容不变的零写 no-op
     } else {
-      storage.removeCard(cardId) // 兜底：卡片未挂载时仍保证存储回滚
+      storage.removeCard(cardId) // 兜底：卡片未挂载时同样内容不变，零写
     }
     setRevealedIds((prev) => {
       const next = new Set(prev)
       next.delete(cardId)
       return next
     })
-  }, [storage, history])
+  }, [storage, history, cardIds])
 
   const activeToast = toastQueue[0]
   useEffect(() => {

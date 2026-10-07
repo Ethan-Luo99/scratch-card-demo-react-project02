@@ -1,13 +1,14 @@
 /**
- * "撤销上一张" node 级断言（评审用）：
+ * 撤销栈跨刷新持久化 node 级断言（评审用）：
  *   node scripts/scratch-undo.assertions.mjs
  *
  * 直接 import 真实模块 src/scratch-card/scratchStorage.js 与
  * src/scratch-card/scratchRevealHistory.js，用 localStorage stub 验证
- * storage 回滚与 revealedIds 语义。GridSim 逐行镜像 ScratchCardGrid 的
- * 离散事件逻辑（reveal → markRevealed+push；undo → pop+removeCard+delete；
- * resetAll → clearAll+clear），其中 undo 的 removeCard 对应真实运行中
- * 单卡 reset() 内部对共享 storage 的那一次写入。
+ * v1→v2 迁移、持久化顺序撤销、孤儿跳过/清除、单次撤销恰好一次写入。
+ * GridSim 逐行镜像 ScratchCardGrid 的离散事件逻辑：挂载 readRevealState
+ * + pruneReveal 水合净化；reveal → markRevealed+push；undo →
+ * popReveal（+单卡 reset 内部那次 removeCard，应为零写 no-op）+pop+delete；
+ * resetAll → clearAll+clear。
  */
 import { createScratchStorage, STORAGE_KEY_BASE } from '../src/scratch-card/scratchStorage.js'
 import { createRevealHistory } from '../src/scratch-card/scratchRevealHistory.js'
@@ -26,6 +27,12 @@ function createLocalStorageStub() {
     removeItem(key) {
       map.delete(key)
     },
+    raw(key = STORAGE_KEY_BASE) {
+      return map.has(key) ? JSON.parse(map.get(key)) : null
+    },
+    seed(key, value) {
+      map.set(key, JSON.stringify(value))
+    },
     resetWriteCount() {
       stub.setItemCalls = 0
     },
@@ -37,16 +44,18 @@ const localStorageStub = createLocalStorageStub()
 globalThis.window = { localStorage: localStorageStub }
 
 const CARDS = ['demo-001', 'demo-002', 'demo-003']
+const VALID_IDS = new Set(CARDS)
 
-/** 镜像 ScratchCardGrid：revealedIds / history / storage 三者的同步维护 */
-function createGridSim(storage, cards) {
-  const stored = storage.readRevealed()
-  const revealedIds = new Set(cards.filter((id) => stored[id]))
-  const validRecords = {}
-  for (const id of cards) {
-    if (stored[id]) validRecords[id] = stored[id]
-  }
-  const history = createRevealHistory(validRecords)
+/** 镜像 ScratchCardGrid：水合净化 + revealedIds / history / storage 同步维护 */
+function createGridSim(storage, cards = CARDS) {
+  const valid = new Set(cards)
+  const state = storage.readRevealState()
+  storage.pruneReveal(valid) // 对应真实 Grid 挂载水合净化 effect
+  const validRecords = Object.fromEntries(
+    Object.entries(state.records).filter(([id]) => valid.has(id)),
+  )
+  const history = createRevealHistory(validRecords, state.order)
+  const revealedIds = new Set(Object.keys(validRecords))
   return {
     revealedIds,
     history,
@@ -56,11 +65,12 @@ function createGridSim(storage, cards) {
       revealedIds.add(cardId)
     },
     undo() {
-      const cardId = history.pop()
-      if (cardId === null) return false
-      storage.removeCard(cardId) // 真实运行中为单卡 reset() 内部的那一次写入
+      const cardId = storage.popReveal(valid)
+      if (cardId === null) return null
+      storage.removeCard(cardId) // 真实运行中为单卡 reset() 内部的那次 removeCard
+      history.pop()
       revealedIds.delete(cardId)
-      return true
+      return cardId
     },
     resetAll() {
       storage.clearAll()
@@ -82,111 +92,198 @@ function assert(condition, name) {
   }
 }
 
-// —— 1. 注入共享实例：自定义 namespace 的 key 被正确读写，默认 key 不受污染 ——
+// —— 1. v1 旧数据迁移后撤销顺序正确（指定必含用例）——
 {
-  const storage = createScratchStorage('grid-a')
-  const grid = createGridSim(storage, CARDS)
-  grid.reveal('demo-001')
-  const namespacedKey = `${STORAGE_KEY_BASE}:grid-a`
+  localStorageStub.seed(STORAGE_KEY_BASE, {
+    'demo-001': { v: 1, ts: 1000 },
+    'demo-002': { v: 1, ts: 2000 },
+    'demo-003': { v: 1, ts: 3000 },
+  })
+  const storage = createScratchStorage()
+  localStorageStub.resetWriteCount()
+  const state = storage.readRevealState() // 首次读到 v1：按 ts 升序迁移并写回
+  const persisted = localStorageStub.raw()
+  const migratedOnce =
+    localStorageStub.setItemCalls === 1 &&
+    persisted !== null &&
+    persisted.v === 2 &&
+    Array.isArray(persisted.order)
+  const recordsKept =
+    state.records['demo-001'].ts === 1000 &&
+    state.records['demo-002'].ts === 2000 &&
+    state.records['demo-003'].ts === 3000
+  const orderAsc = state.order.join(',') === 'demo-001,demo-002,demo-003'
+  storage.readRevealState() // StrictMode 双挂载第二次读取：内容不变不双写
+  const noDoubleWrite = localStorageStub.setItemCalls === 1
+  const grid = createGridSim(storage)
+  const undoOrder = [grid.undo(), grid.undo(), grid.undo()]
+  const undoCorrect =
+    undoOrder.join(',') === 'demo-003,demo-002,demo-001' &&
+    grid.history.size === 0 &&
+    grid.revealedIds.size === 0 &&
+    localStorageStub.raw().order.length === 0
   assert(
-    localStorageStub.getItem(namespacedKey) !== null &&
-      localStorageStub.getItem(STORAGE_KEY_BASE) === null,
-    'A1 共享 storage 实例写自定义命名空间 key，默认 key 保持未写（reset 清错 key 隐患消除）',
-  )
-  grid.undo()
-  assert(
-    localStorageStub.getItem(namespacedKey) === '{}' && grid.revealedIds.size === 0,
-    'A1b 撤销后同一命名空间 key 被回滚为空记录',
+    migratedOnce && recordsKept && orderAsc && noDoubleWrite && undoCorrect,
+    'v1 旧数据迁移后撤销顺序正确：首次读取自动升 v2 且仅写一次、三条 v1 记录零丢失、order 按 ts 升序、双挂载不双写、刷新后撤销按 003→002→001 最近优先',
   )
 }
 
-// —— 2~5. 主流程：连续撤销、撤销到空、单写、撤销后再刮 ——
+// —— 2. 孤儿 id 跳过（指定必含用例）——
 {
-  localStorageStub.resetWriteCount()
+  localStorageStub.seed(STORAGE_KEY_BASE, {
+    v: 2,
+    records: {
+      'demo-001': { v: 1, ts: 1000 },
+      'demo-002': { v: 1, ts: 2000 },
+      'orphan-x': { v: 1, ts: 2500 },
+      'orphan-y': { v: 1, ts: 3000 },
+    },
+    // 栈顶连续两张孤儿，下面才是有效卡；另有一个夹在中间的孤儿
+    order: ['demo-001', 'orphan-x', 'demo-002', 'orphan-y'],
+  })
   const storage = createScratchStorage()
-  const grid = createGridSim(storage, CARDS)
+  localStorageStub.resetWriteCount()
+  const first = storage.popReveal(VALID_IDS) // 一次撤销：跳过栈顶 orphan-y → 弹出 demo-002
+  const afterFirst = storage.readRevealState()
+  const firstCorrect =
+    first === 'demo-002' &&
+    afterFirst.order.join(',') === 'demo-001,orphan-x' && // 沿途孤儿 orphan-y 已清除，中间的 orphan-x 留待下次
+    afterFirst.records['orphan-y'] === undefined &&
+    afterFirst.records['demo-002'] === undefined &&
+    afterFirst.records['demo-001'] !== undefined &&
+    afterFirst.records['orphan-x'] !== undefined &&
+    localStorageStub.setItemCalls === 1 // 跳过孤儿 + 弹有效卡只合并为一次写回，不空转
+  const second = storage.popReveal(VALID_IDS) // 再撤销：跳过夹在中间的 orphan-x，弹出 demo-001
+  const afterSecond = storage.readRevealState()
+  const allClean =
+    firstCorrect &&
+    second === 'demo-001' &&
+    localStorageStub.setItemCalls === 2 &&
+    afterSecond.order.length === 0 &&
+    Object.keys(afterSecond.records).length === 0
+  assert(
+    allClean,
+    '孤儿 id 跳过：撤销自栈顶跳过当前 cards 已不存在的 id 并同步清除其记录与顺序项，一次撤销只写一次、不空转、不误删 demo-001/demo-002 以外有效卡',
+  )
+}
+
+// —— 3. 跨刷新撤销：v2 持久化顺序重建栈，撤销最近揭示优先 ——
+{
+  const storageA = createScratchStorage('fresh-a')
+  let grid = createGridSim(storageA)
   grid.reveal('demo-001')
   grid.reveal('demo-002')
-
-  grid.undo() // 撤销最近揭示的 demo-002
-  const stored = storage.readRevealed()
+  grid.reveal('demo-003')
+  const storageB = createScratchStorage('fresh-a') // 刷新后新实例读同一 key
+  grid = createGridSim(storageB)
+  const order = [grid.history.pop(), grid.history.pop(), grid.history.pop()]
   assert(
-    !stored['demo-002'] &&
-      !!stored['demo-001'] &&
-      !grid.revealedIds.has('demo-002') &&
-      grid.revealedIds.has('demo-001'),
-    'A2 撤销最近一次揭示：storage 与 revealedIds 同步移除该卡、其余卡保留',
+    order.join(',') === 'demo-003,demo-002,demo-001' &&
+      grid.revealedIds.size === 3 &&
+      localStorageStub.raw('scratch-card:revealed:v1:fresh-a').v === 2,
+    '页面刷新后撤销按钮立即可用：新实例水合即得 3 张已揭示，内存栈与持久化 order 一致，最近揭示优先撤销',
   )
+}
 
+// —— 4. 连续快速撤销到空：记录与持久化顺序同时为空，每次恰好一次写入 ——
+{
+  const storage = createScratchStorage('fast-undo')
+  const grid = createGridSim(storage)
+  grid.reveal('demo-001')
+  grid.reveal('demo-002')
   localStorageStub.resetWriteCount()
-  grid.undo() // 再撤销 demo-001
-  assert(
-    localStorageStub.setItemCalls === 1 &&
-      Object.keys(storage.readRevealed()).length === 0 &&
-      grid.revealedIds.size === 0,
-    'A3 连续撤销到空：单次撤销恰好一次 storage 写入（不双写），两个状态源同时清空',
-  )
-
-  localStorageStub.resetWriteCount()
-  const undoOnEmpty = grid.undo()
-  assert(
-    undoOnEmpty === false && localStorageStub.setItemCalls === 0,
-    'A4 空栈撤销为 no-op：返回 false 且零 storage 写入',
-  )
-
-  grid.reveal('demo-003') // 撤销后立刻再刮（按钮/自动同一 reveal 路径）
   grid.undo()
-  grid.reveal('demo-003') // 撤销后同一张卡再次揭示
-  const record = storage.readRevealed()['demo-003']
+  grid.undo() // 连续快速撤销（同一 tick 内无 await，严格串行）
+  const state = storage.readRevealState()
   assert(
-    !!record && record.v === 1 && Number.isFinite(record.ts) && grid.revealedIds.has('demo-003'),
-    'A5 撤销后立刻再刮：记录可重新写入且 revealedIds 重新包含，无串状态',
+    localStorageStub.setItemCalls === 2 &&
+      Object.keys(state.records).length === 0 &&
+      state.order.length === 0 &&
+      grid.revealedIds.size === 0 &&
+      grid.history.size === 0,
+    '连续撤销到空：两次撤销各写一次（无额外双写、不串序），揭示记录与持久化顺序同时为空',
   )
 }
 
-// —— 6. 水合顺序：ts 大者（最近揭示）优先被撤销 ——
+// —— 5. 空栈撤销零写入 no-op ——
 {
-  const storage = createScratchStorage()
-  storage.markRevealed('demo-001')
-  const records = storage.readRevealed()
-  records['demo-002'] = { v: 1, ts: records['demo-001'].ts + 1000 }
-  records['demo-003'] = { v: 1, ts: records['demo-001'].ts + 2000 }
-  window.localStorage.setItem(STORAGE_KEY_BASE, JSON.stringify(records))
-  const grid = createGridSim(storage, CARDS) // 重新水合
-  const undoOrder = [grid.history.pop(), grid.history.pop(), grid.history.pop()]
+  const storage = createScratchStorage('empty-undo')
+  const grid = createGridSim(storage)
+  localStorageStub.resetWriteCount()
+  const popped = grid.undo()
   assert(
-    undoOrder[0] === 'demo-003' && undoOrder[1] === 'demo-002' && undoOrder[2] === 'demo-001',
-    'A6 水合后撤销顺序按 ts 倒序（最近揭示优先），与 revealedIds 初始集合一致',
+    popped === null &&
+      localStorageStub.setItemCalls === 0 &&
+      localStorageStub.raw('scratch-card:revealed:v1:empty-undo') === null,
+    '空栈撤销为 no-op：返回 null、零 storage 写入，无 key 也不凭空创建',
   )
 }
 
-// —— 7. 命名空间隔离：另一套 grid 的记录不受本套撤销影响 ——
+// —— 6. 撤销后立刻再刮（含同一张卡）——
 {
-  const storageA = createScratchStorage('grid-a')
-  const storageB = createScratchStorage('grid-b')
-  storageB.markRevealed('demo-001')
-  const gridA = createGridSim(storageA, CARDS)
-  gridA.reveal('demo-001')
-  gridA.undo()
+  const storage = createScratchStorage('redo')
+  const grid = createGridSim(storage)
+  grid.reveal('demo-003')
+  grid.undo()
+  grid.reveal('demo-003') // 同一张卡再次揭示
+  grid.undo()
+  grid.reveal('demo-003')
+  const state = storage.readRevealState()
+  const record = state.records['demo-003']
   assert(
-    !!storageB.readRevealed()['demo-001'] && Object.keys(storageA.readRevealed()).length === 0,
-    'A7 撤销只回滚本命名空间记录，其他命名空间不串状态',
+    !!record &&
+      record.v === 1 &&
+      Number.isFinite(record.ts) &&
+      state.order.join(',') === 'demo-003' &&
+      grid.revealedIds.has('demo-003') &&
+      grid.history.size === 1,
+    '撤销后立刻再刮：记录与顺序项可重新写入且不重复入栈，无串状态',
   )
 }
 
-// —— 8. 重置全部：clearAll 后三个状态源同时归零 ——
+// —— 7. 重置全部：records 与持久化 order 同清 ——
 {
-  const storage = createScratchStorage()
-  const grid = createGridSim(storage, CARDS)
+  const storage = createScratchStorage('reset-all')
+  const grid = createGridSim(storage)
   grid.reveal('demo-001')
   grid.reveal('demo-002')
   grid.resetAll()
+  const state = storage.readRevealState()
   assert(
-    Object.keys(storage.readRevealed()).length === 0 &&
+    Object.keys(state.records).length === 0 &&
+      state.order.length === 0 &&
       grid.revealedIds.size === 0 &&
       grid.history.size === 0 &&
-      grid.undo() === false,
-    'A8 重置全部后 storage/revealedIds/历史栈同时归零，撤销为 no-op',
+      grid.undo() === null,
+    '重置全部后揭示记录与持久化顺序同时归零，再撤销为 no-op',
+  )
+}
+
+// —— 8. 命名空间隔离：水合净化/撤销/迁移均不串他套 key ——
+{
+  localStorageStub.seed('scratch-card:revealed:v1:ns-a', {
+    v: 2,
+    records: { 'demo-001': { v: 1, ts: 1 }, gone: { v: 1, ts: 2 } },
+    order: ['demo-001', 'gone'],
+  })
+  localStorageStub.seed('scratch-card:revealed:v1:ns-b', {
+    'demo-002': { v: 1, ts: 9 },
+  })
+  const storageA = createScratchStorage('ns-a')
+  const storageB = createScratchStorage('ns-b')
+  const gridA = createGridSim(storageA) // 挂载净化 ns-a 的孤儿 gone
+  const stateB = storageB.readRevealState() // ns-b 独立完成 v1→v2
+  gridA.undo()
+  const a = localStorageStub.raw('scratch-card:revealed:v1:ns-a')
+  const b = localStorageStub.raw('scratch-card:revealed:v1:ns-b')
+  assert(
+    a.order.length === 0 &&
+      a.records['demo-001'] === undefined &&
+      a.records.gone === undefined &&
+      b.v === 2 &&
+      b.order.join(',') === 'demo-002' &&
+      b.records['demo-002'].ts === 9,
+    '命名空间隔离：本套净化/撤销只动本 key，他套 v1 迁移与记录不受影响',
   )
 }
 
