@@ -1,7 +1,8 @@
 /**
  * 揭示顺序栈（Grid 工具栏"撤销"的语义核心）：纯数据模块，无 React/DOM 依赖，
- * 可用 node 直接单测。水合初值取 storage 记录按 ts 升序（最近揭示的在栈顶），
- * 揭示 push、撤销 pop、重置 clear；与 Grid 的 revealedIds 由同一批事件同步维护。
+ * 可用 node 直接单测。水合初值取 storage 持久化的揭示顺序（底→顶，栈顶=
+ * 最近揭示），刷新后撤销立即可用且顺序不丢；揭示 push、撤销 pop、重置 clear；
+ * 与 Grid 的 revealedIds 由同一批离散事件同步维护。
  */
 
 /**
@@ -14,16 +15,19 @@
  */
 
 /**
- * @param {Record<string, { v: 1, ts: number }>} [initialRecords]
- *   水合记录（须已与当前卡片数据做过交集）；按 ts 升序建栈，ts 大者优先被撤销
+ * @param {string[]} [initialOrder]
+ *   水合顺序（底→顶），直接取 scratchStorage.readOrder() 的持久化结果；
+ *   不与当前卡片数据做交集——已不存在的孤儿 id 留在栈中，由 Grid 在撤销时
+ *   跳过并同步清除出持久化顺序（孤儿防御）
  * @returns {RevealHistory}
  */
-export function createRevealHistory(initialRecords = {}) {
-  let order = Object.entries(initialRecords)
-    .sort((a, b) => a[1].ts - b[1].ts)
-    .map(([cardId]) => cardId)
+export function createRevealHistory(initialOrder = []) {
+  let order = initialOrder.filter((cardId) => typeof cardId === 'string')
   return {
     push(cardId) {
+      // 去重后入栈顶：与 storage.markRevealed 的顺序去重保持一致，
+      // 同一卡在栈中至多出现一次，撤销不会弹出重复 id
+      order = order.filter((id) => id !== cardId)
       order.push(cardId)
     },
     pop() {

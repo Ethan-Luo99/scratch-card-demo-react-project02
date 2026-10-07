@@ -32,15 +32,11 @@ export default function ScratchCardGrid({ cards = SCRATCH_CARDS, storageNamespac
   const [revealedIds, setRevealedIds] = useState(
     () => new Set(cards.filter((card) => initialRecords[card.cardId]).map((card) => card.cardId)),
   )
-  // 撤销顺序栈：水合初值按 ts 升序（最近揭示在栈顶）；与 revealedIds 由同一批
-  // 离散事件同步维护（揭示 push / 撤销 pop / 重置 clear），不引入高频 setState
-  const [history] = useState(() => {
-    const validRecords = {}
-    for (const card of cards) {
-      if (initialRecords[card.cardId]) validRecords[card.cardId] = initialRecords[card.cardId]
-    }
-    return createRevealHistory(validRecords)
-  })
+  // 撤销顺序栈：水合初值直接取持久化顺序（底→顶，最近揭示在栈顶），刷新后
+  // 撤销立即可用；不与卡片数据做交集，孤儿 id 留待撤销时跳过并清除（孤儿防御）。
+  // 与 revealedIds 由同一批离散事件同步维护（揭示 push / 撤销 pop / 重置 clear），
+  // 不引入高频 setState
+  const [history] = useState(() => createRevealHistory(storage.readOrder()))
   const [toastQueue, setToastQueue] = useState(/** @type {{ id: number, text: string }[]} */ ([]))
   const [resetKey, setResetKey] = useState(0)
   const toastSeqRef = useRef(0)
@@ -66,13 +62,20 @@ export default function ScratchCardGrid({ cards = SCRATCH_CARDS, storageNamespac
   )
 
   /**
-   * 撤销最近一次揭示（自动全开/按钮全开同一路径，水合记录按 ts 倒序）。
-   * 四个状态源严格一致回滚：revealedIds 在此删除；storage 记录、canvas 掩码与
-   * 涂层、指针监听与 revealed/ratio 内部状态由单卡 reset() 一次完成——
-   * reset 内部对共享 storage 恰好写入一次，Grid 不再重复写（不得双写）。
+   * 撤销最近一次揭示（自动全开/按钮全开同一路径，持久化顺序栈顶优先）。
+   * 孤儿防御：栈顶 id 已不在当前卡片数据中时，跳过该 id 并同步把它从持久化
+   * 顺序中清除，继续取下一个有效 id——不空转、不误删他卡。
+   * 四个状态源严格一致回滚：revealedIds 在此删除；storage 记录与持久化顺序、
+   * canvas 掩码与涂层、指针监听与 revealed/ratio 内部状态由单卡 reset() 一次
+   * 完成——reset 内部对共享 storage 恰好写入一次，Grid 不再重复写（不得双写）。
    */
   const handleUndo = useCallback(() => {
-    const cardId = history.pop()
+    const currentIds = new Set(cards.map((card) => card.cardId))
+    let cardId = history.pop()
+    while (cardId !== null && !currentIds.has(cardId)) {
+      storage.removeFromOrder(cardId) // 孤儿：只清持久化顺序，不动任何记录
+      cardId = history.pop()
+    }
     if (cardId === null) return // 撤销到空：no-op
     const api = cardApisRef.current.get(cardId)
     if (api) {
@@ -85,7 +88,7 @@ export default function ScratchCardGrid({ cards = SCRATCH_CARDS, storageNamespac
       next.delete(cardId)
       return next
     })
-  }, [storage, history])
+  }, [storage, history, cards])
 
   const activeToast = toastQueue[0]
   useEffect(() => {
